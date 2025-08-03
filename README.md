@@ -71,6 +71,8 @@ Here's a walkthrough of implemented user stories:
 
 <img src='http://i.imgur.com/link/to/your/gif/file.gif' title='Video Walkthrough' width='' alt='Video Walkthrough' />
 
+https://github.com/leoyangshen/Web102_week9/blob/main/Peek.gif
+
 <!-- Replace this with whatever GIF tool you used! -->
 GIF created with ...  PEEK
 <!-- Recommended tools:
