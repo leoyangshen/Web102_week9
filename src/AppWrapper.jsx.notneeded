@@ -1,0 +1,737 @@
+import React, { useState, useEffect } from 'react';
+import { createClient } from '@supabase/supabase-js';
+import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useParams } from 'react-router-dom';
+import { formatDistanceToNow, parseISO } from 'date-fns';
+import { LuSend, LuThumbsUp, LuEdit, LuTrash, LuChevronDown, LuChevronUp, LuSearch } from 'react-icons/lu';
+
+// Use environment variables for Supabase keys
+const supabaseUrl = 'https://{your-supabase-project-id}.supabase.co';
+const supabaseAnonKey = '{your-supabase-anon-key}';
+
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+// Define the database schema
+// Users: {id, created_at, email}
+// Posts: {id, created_at, title, content, image_url, upvotes_count, user_id}
+// Comments: {id, created_at, content, post_id, user_id}
+
+// Supabase Setup: This is where you would normally configure Supabase.
+// For the purpose of this demo, we'll use a hardcoded setup.
+// In a real app, you would use env variables and handle auth.
+// We'll also use a single shared user for simplicity.
+
+const App = () => {
+  const [session, setSession] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // Check if the user is already authenticated
+    const getSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      setSession(session);
+      setLoading(false);
+    };
+
+    getSession();
+
+    // Listen for auth state changes
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">
+        <p>Loading app...</p>
+      </div>
+    );
+  }
+
+  // Define a wrapper for the entire app to provide the session
+  const AppWrapper = () => (
+    <div className="bg-gray-900 min-h-screen text-gray-200 font-sans p-4">
+      <div className="max-w-4xl mx-auto">
+        <Header />
+        <Routes>
+          <Route path="/" element={<PostList />} />
+          <Route path="/create" element={<PostForm />} />
+          <Route path="/posts/:id" element={<PostPage />} />
+          <Route path="/posts/:id/edit" element={<PostForm />} />
+          <Route path="/auth" element={<Auth session={session} />} />
+        </Routes>
+      </div>
+    </div>
+  );
+
+  return (
+    <Router>
+      <AppWrapper />
+    </Router>
+  );
+};
+
+// Header component with navigation
+const Header = () => {
+  const navigate = useNavigate();
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    navigate('/auth');
+  };
+
+  const [session, setSession] = useState(null);
+
+  useEffect(() => {
+    const getSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      setSession(session);
+    };
+
+    getSession();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  return (
+    <header className="flex justify-between items-center py-6 px-4 bg-gray-800 rounded-xl shadow-lg mb-6">
+      <Link to="/" className="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-green-500">
+        Starship Forum
+      </Link>
+      <nav className="flex items-center space-x-4">
+        {session ? (
+          <>
+            <Link to="/create" className="bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-4 rounded-full transition-colors duration-300 shadow-md">
+              New Post
+            </Link>
+            <button onClick={handleLogout} className="text-gray-400 hover:text-white transition-colors duration-300">
+              Logout
+            </button>
+          </>
+        ) : (
+          <Link to="/auth" className="text-gray-400 hover:text-white transition-colors duration-300">
+            Sign In
+          </Link>
+        )}
+      </nav>
+    </header>
+  );
+};
+
+// Auth Component for Sign In/Sign Up
+const Auth = ({ session }) => {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isSigningUp, setIsSigningUp] = useState(false);
+  const [message, setMessage] = useState('');
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (session) {
+      navigate('/');
+    }
+  }, [session, navigate]);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setMessage('');
+
+    if (isSigningUp) {
+      const { error } = await supabase.auth.signUp({ email, password });
+      if (error) {
+        setMessage(error.message);
+      } else {
+        setMessage('Check your email to confirm your account!');
+      }
+    } else {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        setMessage(error.message);
+      } else {
+        navigate('/');
+      }
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-center mt-12">
+      <div className="bg-gray-800 p-8 rounded-xl shadow-lg w-full max-w-md">
+        <h2 className="text-2xl font-bold mb-6 text-center text-white">{isSigningUp ? 'Sign Up' : 'Sign In'}</h2>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-400">Email</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="mt-1 block w-full rounded-md bg-gray-700 border-gray-600 text-white p-2 focus:ring-blue-500 focus:border-blue-500"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-400">Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="mt-1 block w-full rounded-md bg-gray-700 border-gray-600 text-white p-2 focus:ring-blue-500 focus:border-blue-500"
+              required
+            />
+          </div>
+          <button
+            type="submit"
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md transition-colors duration-300"
+          >
+            {isSigningUp ? 'Sign Up' : 'Sign In'}
+          </button>
+        </form>
+        {message && (
+          <p className="mt-4 text-center text-sm text-red-400">{message}</p>
+        )}
+        <button
+          onClick={() => setIsSigningUp(!isSigningUp)}
+          className="mt-4 text-center w-full text-blue-400 hover:text-blue-300 transition-colors duration-300"
+        >
+          {isSigningUp ? 'Already have an account? Sign In' : 'Need an account? Sign Up'}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+
+// Post Form component for creating and editing posts
+const PostForm = () => {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const [title, setTitle] = useState('');
+  const [content, setContent] = useState('');
+  const [image, setImage] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+  const [session, setSession] = useState(null);
+
+  useEffect(() => {
+    const getSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      setSession(session);
+    };
+
+    getSession();
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    const fetchPost = async () => {
+      if (id) {
+        setLoading(true);
+        const { data, error } = await supabase.from('posts').select('*').eq('id', id).single();
+        if (error) {
+          console.error(error);
+          setMessage('Error fetching post.');
+          setLoading(false);
+          return;
+        }
+        setTitle(data.title);
+        setContent(data.content);
+        setImage(data.image_url);
+        setLoading(false);
+      }
+    };
+    fetchPost();
+  }, [id]);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setMessage('');
+
+    if (!session) {
+      setMessage('You must be logged in to create or edit a post.');
+      setLoading(false);
+      return;
+    }
+
+    const postData = {
+      title,
+      content,
+      image_url: image,
+      user_id: session.user.id,
+    };
+
+    if (id) {
+      // Edit an existing post
+      const { error } = await supabase.from('posts').update(postData).eq('id', id);
+      if (error) {
+        setMessage('Error updating post.');
+        console.error(error);
+      } else {
+        setMessage('Post updated successfully!');
+        navigate(`/posts/${id}`);
+      }
+    } else {
+      // Create a new post
+      const { error } = await supabase.from('posts').insert([{ ...postData, upvotes_count: 0 }]);
+      if (error) {
+        setMessage('Error creating post.');
+        console.error(error);
+      } else {
+        setMessage('Post created successfully!');
+        navigate('/');
+      }
+    }
+
+    setLoading(false);
+  };
+
+  return (
+    <div className="bg-gray-800 p-8 rounded-xl shadow-lg">
+      <h2 className="text-2xl font-bold mb-6 text-center text-white">{id ? 'Edit Post' : 'Create New Post'}</h2>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-400">Title</label>
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            className="mt-1 block w-full rounded-md bg-gray-700 border-gray-600 text-white p-2"
+            required
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-400">Content (Optional)</label>
+          <textarea
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            rows="5"
+            className="mt-1 block w-full rounded-md bg-gray-700 border-gray-600 text-white p-2"
+          ></textarea>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-400">Image URL (Optional)</label>
+          <input
+            type="url"
+            value={image}
+            onChange={(e) => setImage(e.target.value)}
+            className="mt-1 block w-full rounded-md bg-gray-700 border-gray-600 text-white p-2"
+          />
+        </div>
+        <button
+          type="submit"
+          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md transition-colors duration-300"
+          disabled={loading}
+        >
+          {loading ? 'Submitting...' : (id ? 'Update Post' : 'Create Post')}
+        </button>
+      </form>
+      {message && (
+        <p className={`mt-4 text-center text-sm ${message.includes('Error') ? 'text-red-400' : 'text-green-400'}`}>{message}</p>
+      )}
+    </div>
+  );
+};
+
+
+// Post List component for the home feed
+const PostList = () => {
+  const [posts, setPosts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [sortBy, setSortBy] = useState('creation_time');
+  const [sortOrder, setSortOrder] = useState('desc');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    fetchPosts();
+
+    // Set up Realtime subscription for posts
+    const subscription = supabase
+      .channel('public:posts')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'posts' }, (payload) => {
+        console.log('Change received!', payload);
+        fetchPosts();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(subscription);
+    };
+  }, [sortBy, sortOrder, searchQuery]);
+
+  const fetchPosts = async () => {
+    setLoading(true);
+    setMessage('');
+    try {
+      let query = supabase.from('posts').select('*');
+
+      if (searchQuery) {
+        // Simple client-side search by title.
+        // In a real app, you would do this with a database filter
+        // or a dedicated search service.
+      } else {
+        query = query.order(sortBy, { ascending: sortOrder === 'asc' });
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+      
+      // Filter client-side if a search query exists
+      const filteredData = searchQuery
+        ? data.filter(post => post.title.toLowerCase().includes(searchQuery.toLowerCase()))
+        : data;
+
+      setPosts(filteredData);
+    } catch (error) {
+      console.error('Error fetching posts:', error);
+      setMessage('Error loading posts.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="flex flex-col sm:flex-row justify-between items-center mb-6 space-y-4 sm:space-y-0 sm:space-x-4">
+        <div className="flex items-center space-x-2 w-full sm:w-auto">
+          <LuSearch className="text-gray-400" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search by title..."
+            className="w-full sm:w-64 rounded-md bg-gray-700 border-gray-600 text-white p-2"
+          />
+          <button onClick={fetchPosts} className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-md transition-colors duration-300">
+            Search
+          </button>
+        </div>
+        <div className="flex items-center space-x-4 w-full sm:w-auto">
+          <span className="text-gray-400">Sort By:</span>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+            className="rounded-md bg-gray-700 border-gray-600 text-white p-2"
+          >
+            <option value="creation_time">Creation Time</option>
+            <option value="upvotes_count">Upvotes</option>
+          </select>
+          <button
+            onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+            className="bg-gray-700 text-white p-2 rounded-md transition-colors duration-300 hover:bg-gray-600"
+          >
+            {sortOrder === 'asc' ? <LuChevronUp /> : <LuChevronDown />}
+          </button>
+        </div>
+      </div>
+
+      {message && <p className="text-center text-red-400 mb-4">{message}</p>}
+      {loading ? (
+        <div className="flex items-center justify-center p-8">
+          <p>Loading posts...</p>
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {posts.length > 0 ? (
+            posts.map((post) => <PostCard key={post.id} post={post} />)
+          ) : (
+            <p className="text-center text-gray-500">No posts found. Be the first to create one!</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+
+// Post Card component for a post in the list
+const PostCard = ({ post }) => {
+  return (
+    <Link to={`/posts/${post.id}`} className="block bg-gray-800 p-6 rounded-xl shadow-lg transition-transform duration-300 hover:scale-105">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-xl font-semibold text-white">{post.title}</h3>
+        <div className="flex items-center space-x-1 text-gray-400">
+          <LuThumbsUp />
+          <span>{post.upvotes_count}</span>
+        </div>
+      </div>
+      <p className="text-sm text-gray-500">Posted {formatDistanceToNow(parseISO(post.created_at), { addSuffix: true })}</p>
+    </Link>
+  );
+};
+
+
+// Post Page component for the detailed view
+const PostPage = () => {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const [post, setPost] = useState(null);
+  const [comments, setComments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState('');
+  const [newComment, setNewComment] = useState('');
+  const [isOwner, setIsOwner] = useState(false);
+  const [session, setSession] = useState(null);
+
+  useEffect(() => {
+    const getSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      setSession(session);
+    };
+
+    getSession();
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    fetchPostAndComments();
+
+    const subscription = supabase
+      .channel('public:posts')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'posts', filter: `id=eq.${id}` }, (payload) => {
+        console.log('Post change received!', payload);
+        if (payload.new) {
+          setPost(payload.new);
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'comments', filter: `post_id=eq.${id}` }, (payload) => {
+        console.log('Comment change received!', payload);
+        fetchComments();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(subscription);
+    };
+  }, [id]);
+
+  const fetchPostAndComments = async () => {
+    setLoading(true);
+    setMessage('');
+    try {
+      // Fetch post details
+      const { data: postData, error: postError } = await supabase
+        .from('posts')
+        .select('*')
+        .eq('id', id)
+        .single();
+
+      if (postError) throw postError;
+
+      setPost(postData);
+      if (session && postData.user_id === session.user.id) {
+        setIsOwner(true);
+      } else {
+        setIsOwner(false);
+      }
+
+      // Fetch comments for the post
+      await fetchComments();
+
+    } catch (error) {
+      console.error('Error fetching post or comments:', error);
+      setMessage('Error loading post.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchComments = async () => {
+    const { data: commentsData, error: commentsError } = await supabase
+      .from('comments')
+      .select('*')
+      .eq('post_id', id)
+      .order('created_at', { ascending: true });
+
+    if (commentsError) throw commentsError;
+    setComments(commentsData);
+  };
+
+  const handleUpvote = async () => {
+    if (!session) {
+      setMessage('You must be logged in to upvote a post.');
+      return;
+    }
+    const newUpvotes = post.upvotes_count + 1;
+    const { error } = await supabase
+      .from('posts')
+      .update({ upvotes_count: newUpvotes })
+      .eq('id', id);
+
+    if (error) {
+      console.error('Error upvoting:', error);
+      setMessage('Error upvoting post.');
+    } else {
+      setPost({ ...post, upvotes_count: newUpvotes });
+    }
+  };
+
+  const handleCommentSubmit = async (e) => {
+    e.preventDefault();
+    if (!session) {
+      setMessage('You must be logged in to leave a comment.');
+      return;
+    }
+    if (newComment.trim() === '') return;
+
+    const { error } = await supabase
+      .from('comments')
+      .insert([
+        { content: newComment, post_id: id, user_id: session.user.id },
+      ]);
+
+    if (error) {
+      console.error('Error adding comment:', error);
+      setMessage('Error adding comment.');
+    } else {
+      setNewComment('');
+      setMessage('Comment added successfully!');
+    }
+  };
+
+  const handleDeletePost = async () => {
+    if (window.confirm('Are you sure you want to delete this post?')) {
+      const { error } = await supabase.from('posts').delete().eq('id', id);
+      if (error) {
+        console.error('Error deleting post:', error);
+        setMessage('Error deleting post.');
+      } else {
+        setMessage('Post deleted successfully!');
+        navigate('/');
+      }
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center p-8 min-h-screen">
+        <p>Loading post...</p>
+      </div>
+    );
+  }
+
+  if (!post) {
+    return (
+      <div className="flex items-center justify-center p-8 min-h-screen">
+        <p>Post not found.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-gray-800 p-8 rounded-xl shadow-lg space-y-6">
+      <h1 className="text-3xl font-bold text-white">{post.title}</h1>
+      <p className="text-sm text-gray-500">
+        Posted {formatDistanceToNow(parseISO(post.created_at), { addSuffix: true })}
+      </p>
+
+      {post.image_url && (
+        <div className="my-4 overflow-hidden rounded-lg shadow-md">
+          <img
+            src={post.image_url}
+            alt={post.title}
+            className="w-full h-auto object-cover"
+          />
+        </div>
+      )}
+
+      {post.content && (
+        <div className="prose prose-invert text-gray-300">
+          <p>{post.content}</p>
+        </div>
+      )}
+
+      <div className="flex items-center space-x-4">
+        <button
+          onClick={handleUpvote}
+          className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-full transition-colors duration-300 shadow-md"
+        >
+          <LuThumbsUp />
+          <span>{post.upvotes_count} Upvotes</span>
+        </button>
+        {isOwner && (
+          <>
+            <Link
+              to={`/posts/${post.id}/edit`}
+              className="flex items-center space-x-2 bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 px-4 rounded-full transition-colors duration-300 shadow-md"
+            >
+              <LuEdit />
+              <span>Edit</span>
+            </Link>
+            <button
+              onClick={handleDeletePost}
+              className="flex items-center space-x-2 bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-full transition-colors duration-300 shadow-md"
+            >
+              <LuTrash />
+              <span>Delete</span>
+            </button>
+          </>
+        )}
+      </div>
+
+      {message && (
+        <div className={`p-4 rounded-md text-sm ${message.includes('Error') ? 'bg-red-900 text-red-400' : 'bg-green-900 text-green-400'}`}>
+          {message}
+        </div>
+      )}
+
+      <div className="mt-8">
+        <h3 className="text-2xl font-bold text-white mb-4">Comments</h3>
+        <div className="space-y-4">
+          {comments.map((comment) => (
+            <div key={comment.id} className="bg-gray-700 p-4 rounded-lg shadow-inner">
+              <p className="text-gray-200">{comment.content}</p>
+              <p className="text-xs text-gray-400 mt-2">
+                Commented {formatDistanceToNow(parseISO(comment.created_at), { addSuffix: true })}
+              </p>
+            </div>
+          ))}
+          {comments.length === 0 && <p className="text-gray-500 text-center">No comments yet. Be the first!</p>}
+        </div>
+
+        <form onSubmit={handleCommentSubmit} className="mt-6 flex space-x-2">
+          <input
+            type="text"
+            value={newComment}
+            onChange={(e) => setNewComment(e.target.value)}
+            placeholder="Leave a comment..."
+            className="flex-grow rounded-md bg-gray-700 border-gray-600 text-white p-2"
+            required
+          />
+          <button
+            type="submit"
+            className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md transition-colors duration-300"
+          >
+            <LuSend />
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// Main function to render the app
+export default function AppWrapper() {
+  return <App />;
+}

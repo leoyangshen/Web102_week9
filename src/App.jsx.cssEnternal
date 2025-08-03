@@ -1,0 +1,1191 @@
+import React, { useState, useEffect } from "react";
+import { initializeApp } from "firebase/app";
+import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "firebase/auth";
+import { getFirestore, collection, onSnapshot, addDoc, query, doc, updateDoc, arrayUnion, arrayRemove, deleteDoc } from "firebase/firestore";
+
+// Main application component
+const App = () => {
+    // Firebase configuration from the environment
+    const firebaseConfig = {
+        apiKey: "AIzaSyDMf8dxE76Cg2WInANZCIPZ7fC31ni2AX4",
+        authDomain: "forum-6180f.firebaseapp.com",
+        projectId: "forum-6180f",
+        storageBucket: "forum-6180f.firebasestorage.app",
+        messagingSenderId: "804196772268",
+        appId: "1:804196772268:web:cde0111cd95d8177af3209",
+        measurementId: "G-TBKN7HYYRY"
+    };
+
+    // State management for the application
+    const [posts, setPosts] = useState([]);
+    const [db, setDb] = useState(null);
+    const [auth, setAuth] = useState(null);
+    const [userId, setUserId] = useState(null);
+    const [message, setMessage] = useState('');
+    const [messageType, setMessageType] = useState('info');
+    const [currentPage, setCurrentPage] = useState('home');
+    const [currentPost, setCurrentPost] = useState(null);
+    const [sorting, setSorting] = useState('newest'); // 'newest' or 'popular'
+    const [commentCounts, setCommentCounts] = useState({});
+
+    // Global variables provided by the environment
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+    // Helper function to show a temporary notification message
+    const showMessage = (text, type = 'info') => {
+        setMessage(text);
+        setMessageType(type);
+        setTimeout(() => setMessage(''), 3000);
+    };
+
+    // --- Firebase Initialization and Authentication ---
+    useEffect(() => {
+        try {
+            const app = initializeApp(firebaseConfig);
+            const firestore = getFirestore(app);
+            const firebaseAuth = getAuth(app);
+            setDb(firestore);
+            setAuth(firebaseAuth);
+
+            const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
+                if (user) {
+                    setUserId(user.uid);
+                    console.log("User authenticated:", user.uid);
+                } else {
+                    console.log("No user signed in. Signing in anonymously...");
+                    try {
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(firebaseAuth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(firebaseAuth);
+                        }
+                    } catch (error) {
+                        console.error("Authentication failed:", error);
+                        showMessage("Authentication failed.", "error");
+                    }
+                }
+            });
+
+            return () => unsubscribe();
+        } catch (error) {
+            console.error("Firebase initialization failed:", error);
+            showMessage("Firebase initialization failed. Check your config.", "error");
+        }
+    }, [initialAuthToken]);
+
+    // --- Firestore Data Fetching ---
+    useEffect(() => {
+        if (!db || !userId) return;
+
+        const postsCollection = collection(db, `/artifacts/${appId}/public/data/posts`);
+        const q = query(postsCollection);
+
+        const unsubscribePosts = onSnapshot(q, (snapshot) => {
+            const fetchedPosts = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data(),
+            }));
+
+            // Apply sorting logic
+            let sortedPosts = [...fetchedPosts];
+            if (sorting === 'newest') {
+                sortedPosts.sort((a, b) => b.createdAt - a.createdAt);
+            } else if (sorting === 'popular') {
+                sortedPosts.sort((a, b) => (b.upvotes?.length || 0) - (a.upvotes?.length || 0));
+            }
+            setPosts(sortedPosts);
+
+            // Fetch comment counts for each post
+            const counts = {};
+            fetchedPosts.forEach(post => {
+                const commentsCollection = collection(db, `/artifacts/${appId}/public/data/posts/${post.id}/comments`);
+                // Use a separate listener for each post's comment count
+                onSnapshot(commentsCollection, (commentSnapshot) => {
+                    counts[post.id] = commentSnapshot.size;
+                    setCommentCounts({...counts});
+                });
+            });
+
+        }, (error) => {
+            console.error("Error fetching posts:", error);
+            showMessage("Error fetching posts.", "error");
+        });
+
+        return () => unsubscribePosts();
+    }, [db, userId, appId, sorting]);
+
+
+    // --- Core Functionality Handlers ---
+    const handlePostSubmit = async ({ title, content, photoUrl }) => {
+        if (!userId) {
+            showMessage("Authentication not ready. Please wait.", "error");
+            return;
+        }
+        if (title.trim() === '' || content.trim() === '') {
+            showMessage("Title and content cannot be empty.", "error");
+            return;
+        }
+
+        try {
+            await addDoc(collection(db, `/artifacts/${appId}/public/data/posts`), {
+                title,
+                content,
+                photoUrl,
+                userId,
+                createdAt: Date.now(),
+                upvotes: [],
+                downvotes: [],
+            });
+            showMessage("Post created successfully!", "success");
+            setCurrentPage('home');
+        } catch (e) {
+            console.error("Error adding document: ", e);
+            showMessage("Error creating post.", "error");
+        }
+    };
+
+    const handlePostUpdate = async ({ title, content, photoUrl }) => {
+        if (!userId || !currentPost?.id) {
+            showMessage("Cannot update post. Invalid user or post ID.", "error");
+            return;
+        }
+        if (title.trim() === '' || content.trim() === '') {
+            showMessage("Title and content cannot be empty.", "error");
+            return;
+        }
+
+        try {
+            const postRef = doc(db, `/artifacts/${appId}/public/data/posts`, currentPost.id);
+            await updateDoc(postRef, {
+                title,
+                content,
+                photoUrl,
+            });
+            showMessage("Post updated successfully!", "success");
+            setCurrentPost({ ...currentPost, title, content, photoUrl });
+            setCurrentPage('post-detail');
+        } catch (e) {
+            console.error("Error updating document: ", e);
+            showMessage("Error updating post.", "error");
+        }
+    };
+
+    const handlePostDelete = async (postId) => {
+        if (!userId) {
+            showMessage("You must be authenticated to delete posts.", "error");
+            return;
+        }
+        // Only allow post creator to delete their post
+        const post = posts.find(p => p.id === postId);
+        if (post.userId !== userId) {
+            showMessage("You can only delete your own posts.", "error");
+            return;
+        }
+
+        try {
+            const postRef = doc(db, `/artifacts/${appId}/public/data/posts`, postId);
+            await deleteDoc(postRef);
+            showMessage("Post deleted successfully!", "success");
+            setCurrentPage('home');
+        } catch (e) {
+            console.error("Error deleting document: ", e);
+            showMessage("Error deleting post.", "error");
+        }
+    };
+
+    const handleVote = async (postId, type) => {
+        if (!userId) {
+            showMessage("You must be authenticated to vote.", "error");
+            return;
+        }
+
+        const postRef = doc(db, `/artifacts/${appId}/public/data/posts`, postId);
+        const post = posts.find(p => p.id === postId);
+        
+        let newUpvotes = [...(post.upvotes || [])];
+        let newDownvotes = [...(post.downvotes || [])];
+
+        try {
+            if (type === 'upvote') {
+                if (newUpvotes.includes(userId)) {
+                    newUpvotes = newUpvotes.filter(id => id !== userId);
+                    await updateDoc(postRef, { upvotes: arrayRemove(userId) });
+                } else {
+                    newUpvotes.push(userId);
+                    newDownvotes = newDownvotes.filter(id => id !== userId);
+                    await updateDoc(postRef, {
+                        upvotes: arrayUnion(userId),
+                        downvotes: arrayRemove(userId)
+                    });
+                }
+            } else if (type === 'downvote') {
+                if (newDownvotes.includes(userId)) {
+                    newDownvotes = newDownvotes.filter(id => id !== userId);
+                    await updateDoc(postRef, { downvotes: arrayRemove(userId) });
+                } else {
+                    newDownvotes.push(userId);
+                    newUpvotes = newUpvotes.filter(id => id !== userId);
+                    await updateDoc(postRef, {
+                        downvotes: arrayUnion(userId),
+                        upvotes: arrayRemove(userId)
+                    });
+                }
+            }
+            
+            // Immediately update the currentPost state to reflect the change
+            setCurrentPost({ ...currentPost, upvotes: newUpvotes, downvotes: newDownvotes });
+            showMessage("Vote updated!", "success");
+
+        } catch (error) {
+            console.error("Error updating vote:", error);
+            showMessage("Error updating vote.", "error");
+        }
+    };
+
+    // --- Page Routing Logic ---
+    const renderPage = () => {
+        switch (currentPage) {
+            case 'home':
+                return <HomeFeed />;
+            case 'create-post':
+                return <CreatePostForm onSubmit={handlePostSubmit} />;
+            case 'post-detail':
+                return <PostDetail />;
+            case 'update-post':
+                return <UpdatePostForm onSubmit={handlePostUpdate} currentPost={currentPost} />;
+            default:
+                return <HomeFeed />;
+        }
+    };
+
+    // --- Component Definitions (UI) ---
+    const HomeFeed = () => (
+        <>
+            <div className="flex-between-center mb-4">
+                <h2 className="text-2xl font-bold text-gray-800">Recent Posts</h2>
+                <div className="flex-gap-2">
+                    <button
+                        onClick={() => setSorting('newest')}
+                        className={`sort-button ${sorting === 'newest' ? 'active' : ''}`}
+                    >
+                        Newest
+                    </button>
+                    <button
+                        onClick={() => setSorting('popular')}
+                        className={`sort-button ${sorting === 'popular' ? 'active' : ''}`}
+                    >
+                        Most Popular
+                    </button>
+                </div>
+            </div>
+            <div id="posts-container">
+                {posts.length === 0 ? (
+                    <p className="empty-state">
+                        {userId ? 'No posts yet. Be the first to create one!' : 'Loading posts...'}
+                    </p>
+                ) : (
+                    posts.map(post => (
+                        <div key={post.id} className="post-card">
+                            <h3 className="post-title">{post.title}</h3>
+                            <p className="post-content">{post.content}</p>
+                            <div className="post-footer">
+                                <div className="post-meta">
+                                    <div className="meta-item">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="icon" fill="currentColor" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                                        <span className="font-bold">{post.upvotes?.length || 0}</span>
+                                    </div>
+                                    <div className="meta-item">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="icon" fill="currentColor" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+                                        <span className="font-bold">{post.downvotes?.length || 0}</span>
+                                    </div>
+                                    <div className="meta-item">
+                                        <span>Comments: {commentCounts[post.id] || 0}</span>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => {
+                                        setCurrentPost(post);
+                                        setCurrentPage('post-detail');
+                                    }}
+                                    className="link-button"
+                                >
+                                    View Post
+                                </button>
+                            </div>
+                        </div>
+                    ))
+                )}
+            </div>
+        </>
+    );
+
+    const CreatePostForm = ({ onSubmit }) => {
+        const [title, setTitle] = useState('');
+        const [content, setContent] = useState('');
+        const [photoUrl, setPhotoUrl] = useState('');
+
+        const handleSubmit = (e) => {
+            e.preventDefault();
+            onSubmit({ title, content, photoUrl });
+            setTitle('');
+            setContent('');
+            setPhotoUrl('');
+        };
+
+        return (
+            <div className="form-card">
+                <h2 className="form-title">Create a New Post</h2>
+                <form onSubmit={handleSubmit}>
+                    <div className="form-group">
+                        <label htmlFor="post-title" className="form-label">Title</label>
+                        <input
+                            type="text"
+                            id="post-title"
+                            value={title}
+                            onChange={(e) => setTitle(e.target.value)}
+                            className="form-input"
+                            required
+                        />
+                    </div>
+                    <div className="form-group">
+                        <label htmlFor="post-content" className="form-label">Content</label>
+                        <textarea
+                            id="post-content"
+                            rows="6"
+                            value={content}
+                            onChange={(e) => setContent(e.target.value)}
+                            className="form-input"
+                            required
+                        ></textarea>
+                    </div>
+                    <div className="form-group">
+                        <label htmlFor="post-photo" className="form-label">Photo URL</label>
+                        <input
+                            type="url"
+                            id="post-photo"
+                            value={photoUrl}
+                            onChange={(e) => setPhotoUrl(e.target.value)}
+                            className="form-input"
+                        />
+                    </div>
+                    <button
+                        type="submit"
+                        className="form-submit-button"
+                    >
+                        Create Post
+                    </button>
+                </form>
+            </div>
+        );
+    };
+
+    const PostDetail = () => (
+        <div className="post-detail-card">
+            <button
+                onClick={() => {
+                    setCurrentPost(null);
+                    setCurrentPage('home');
+                }}
+                className="back-button"
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" className="back-icon" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clipRule="evenodd" /></svg>
+                Back to Home
+            </button>
+            {currentPost ? (
+                <>
+                    <h1 className="post-detail-title">{currentPost.title}</h1>
+                    <div className="post-detail-meta">
+                        <span>Posted by: {currentPost.userId.substring(0, 8)}...</span>
+                        <span>{new Date(currentPost.createdAt).toLocaleString()}</span>
+                    </div>
+
+                    {currentPost.photoUrl && (
+                        <div className="post-image-container">
+                            <img src={currentPost.photoUrl} alt={currentPost.title} className="post-detail-image" />
+                        </div>
+                    )}
+
+                    <p className="post-detail-content">{currentPost.content}</p>
+
+                    <div className="flex-between-center post-actions">
+                        <div className="vote-section">
+                            {/* Upvote button */}
+                            <button
+                                onClick={() => handleVote(currentPost.id, 'upvote')}
+                                className={`vote-button ${currentPost.upvotes?.includes(userId) ? 'upvote-active' : ''}`}
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="icon" fill="currentColor" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                                <span className="vote-count">{currentPost.upvotes?.length || 0}</span>
+                            </button>
+                            
+                            {/* Downvote button */}
+                            <button
+                                onClick={() => handleVote(currentPost.id, 'downvote')}
+                                className={`vote-button ${currentPost.downvotes?.includes(userId) ? 'downvote-active' : ''}`}
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="icon" fill="currentColor" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+                                <span className="vote-count">{currentPost.downvotes?.length || 0}</span>
+                            </button>
+                        </div>
+
+                        {currentPost.userId === userId && (
+                            <div className="action-buttons">
+                                <button
+                                    onClick={() => {
+                                        setCurrentPage('update-post');
+                                    }}
+                                    className="link-button"
+                                >
+                                    Update
+                                </button>
+                                <div className="divider"></div>
+                                <button
+                                    onClick={() => handlePostDelete(currentPost.id)}
+                                    className="link-button delete-button"
+                                >
+                                    Delete
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                    
+                    {/* Comments Section is now a dedicated component */}
+                    <CommentSection postId={currentPost.id} userId={userId} db={db} appId={appId} showMessage={showMessage} />
+                </>
+            ) : (
+                <p className="empty-state">Post not found.</p>
+            )}
+        </div>
+    );
+
+    // New dedicated component for the comments section
+    const CommentSection = ({ postId, userId, db, appId, showMessage }) => {
+        const [comments, setComments] = useState([]);
+        const [commentContent, setCommentContent] = useState('');
+        const [editingCommentId, setEditingCommentId] = useState(null);
+        const [editingCommentContent, setEditingCommentContent] = useState('');
+
+        useEffect(() => {
+            if (!db || !postId) return;
+            const commentsCollection = collection(db, `/artifacts/${appId}/public/data/posts/${postId}/comments`);
+            const unsubscribe = onSnapshot(commentsCollection, (snapshot) => {
+                const fetchedComments = snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data(),
+                }));
+                fetchedComments.sort((a, b) => b.createdAt - a.createdAt);
+                setComments(fetchedComments);
+            });
+            return () => unsubscribe();
+        }, [db, postId, appId]);
+
+        const handleCommentSubmit = async (e) => {
+            e.preventDefault();
+            if (!userId) {
+                showMessage("You must be authenticated to comment.", "error");
+                return;
+            }
+            if (commentContent.trim() === '') {
+                showMessage("Comment cannot be empty.", "error");
+                return;
+            }
+
+            try {
+                const commentsCollection = collection(db, `/artifacts/${appId}/public/data/posts/${postId}/comments`);
+                await addDoc(commentsCollection, {
+                    content: commentContent,
+                    userId,
+                    createdAt: Date.now(),
+                });
+                setCommentContent('');
+                showMessage("Comment added successfully!", "success");
+            } catch (error) {
+                console.error("Error adding comment: ", error);
+                showMessage("Error adding comment.", "error");
+            }
+        };
+
+        const handleUpdateComment = async (e, commentId) => {
+            e.preventDefault();
+            if (editingCommentContent.trim() === '') {
+                showMessage("Comment cannot be empty.", "error");
+                return;
+            }
+            try {
+                const commentRef = doc(db, `/artifacts/${appId}/public/data/posts/${postId}/comments`, commentId);
+                await updateDoc(commentRef, { content: editingCommentContent });
+                setEditingCommentId(null);
+                setEditingCommentContent('');
+                showMessage("Comment updated successfully!", "success");
+            } catch (error) {
+                console.error("Error updating comment:", error);
+                showMessage("Error updating comment.", "error");
+            }
+        };
+
+        return (
+            <div className="comments-section">
+                <h4 className="comments-title">Comments ({comments.length})</h4>
+                
+                {/* Comment form */}
+                <form onSubmit={handleCommentSubmit} className="comment-form">
+                    <textarea
+                        rows="2"
+                        value={commentContent}
+                        onChange={(e) => setCommentContent(e.target.value)}
+                        className="form-input"
+                        placeholder="Add a comment..."
+                        required
+                    ></textarea>
+                    <button
+                        type="submit"
+                        className="comment-submit-button"
+                    >
+                        Add Comment
+                    </button>
+                </form>
+
+                {/* Comment list */}
+                {comments.length === 0 ? (
+                    <p className="empty-state">No comments yet.</p>
+                ) : (
+                    comments.map(comment => (
+                        <div key={comment.id} className="comment-item">
+                            {editingCommentId === comment.id ? (
+                                <form onSubmit={(e) => handleUpdateComment(e, comment.id)}>
+                                    <textarea
+                                        rows="2"
+                                        value={editingCommentContent}
+                                        onChange={(e) => setEditingCommentContent(e.target.value)}
+                                        className="form-input"
+                                        required
+                                    />
+                                    <div className="edit-comment-actions">
+                                        <button type="submit" className="save-button">Save</button>
+                                        <button type="button" onClick={() => setEditingCommentId(null)} className="cancel-button">Cancel</button>
+                                    </div>
+                                </form>
+                            ) : (
+                                <>
+                                    <p className="comment-text">{comment.content}</p>
+                                    <div className="comment-meta flex-between-center">
+                                        <div>
+                                            <span>By: {comment.userId.substring(0, 8)}...</span>
+                                            <span className="ml-4">{new Date(comment.createdAt).toLocaleString()}</span>
+                                        </div>
+                                        {comment.userId === userId && (
+                                            <button
+                                                onClick={() => {
+                                                    setEditingCommentId(comment.id);
+                                                    setEditingCommentContent(comment.content);
+                                                }}
+                                                className="link-button"
+                                            >
+                                                Edit
+                                            </button>
+                                        )}
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    ))
+                )}
+            </div>
+        );
+    };
+
+    const UpdatePostForm = ({ onSubmit, currentPost }) => {
+        const [title, setTitle] = useState(currentPost?.title || '');
+        const [content, setContent] = useState(currentPost?.content || '');
+        const [photoUrl, setPhotoUrl] = useState(currentPost?.photoUrl || '');
+
+        const handleSubmit = (e) => {
+            e.preventDefault();
+            onSubmit({ title, content, photoUrl });
+        };
+
+        return (
+            <div className="form-card">
+                <button
+                    onClick={() => setCurrentPage('post-detail')}
+                    className="back-button"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="back-icon" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clipRule="evenodd" /></svg>
+                    Back to Post
+                </button>
+                <h2 className="form-title">Update Post</h2>
+                <form onSubmit={handleSubmit}>
+                    <div className="form-group">
+                        <label htmlFor="update-title" className="form-label">Title</label>
+                        <input
+                            type="text"
+                            id="update-title"
+                            value={title}
+                            onChange={(e) => setTitle(e.target.value)}
+                            className="form-input"
+                            required
+                        />
+                    </div>
+                    <div className="form-group">
+                        <label htmlFor="update-content" className="form-label">Content</label>
+                        <textarea
+                            id="update-content"
+                            rows="6"
+                            value={content}
+                            onChange={(e) => setContent(e.target.value)}
+                            className="form-input"
+                            required
+                        ></textarea>
+                    </div>
+                    <div className="form-group">
+                        <label htmlFor="update-photo" className="form-label">Photo URL</label>
+                        <input
+                            type="url"
+                            id="update-photo"
+                            value={photoUrl}
+                            onChange={(e) => setPhotoUrl(e.target.value)}
+                            className="form-input"
+                        />
+                    </div>
+                    <button
+                        type="submit"
+                        className="form-submit-button"
+                    >
+                        Update Post
+                    </button>
+                </form>
+            </div>
+        );
+    };
+
+    return (
+        <div className="app-container">
+            <style>
+                {`
+                    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+
+                    :root {
+                        --primary-color: #3b82f6; /* blue-600 */
+                        --primary-dark: #2563eb;  /* blue-700 */
+                        --success-color: #10b981; /* green-500 */
+                        --error-color: #ef4444;   /* red-500 */
+                        --text-color: #1f2937;    /* gray-900 */
+                        --secondary-text: #4b5563; /* gray-600 */
+                        --light-bg: #f3f4f6;      /* gray-100 */
+                        --card-bg: #ffffff;
+                        --border-color: #e5e7eb;  /* gray-200 */
+                    }
+
+                    body {
+                        font-family: 'Inter', sans-serif;
+                        background-color: var(--light-bg);
+                        margin: 0;
+                        line-height: 1.5;
+                    }
+                    
+                    .app-container {
+                        padding: 1rem;
+                        min-height: 100vh;
+                        display: flex;
+                        justify-content: center;
+                    }
+
+                    .main-content-wrapper {
+                        width: 100%;
+                        max-width: 56rem; /* max-w-4xl */
+                    }
+
+                    .flex-between-center {
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                    }
+
+                    .flex-gap-2 {
+                        display: flex;
+                        gap: 0.5rem;
+                    }
+
+                    .header-card {
+                        background-color: var(--card-bg);
+                        padding: 1.5rem;
+                        border-radius: 0.75rem; /* rounded-xl */
+                        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+                        margin-bottom: 2rem;
+                    }
+
+                    .logo {
+                        font-size: 2.25rem; /* text-4xl */
+                        font-weight: 800;
+                        color: var(--text-color);
+                    }
+
+                    .nav-buttons {
+                        display: flex;
+                        gap: 1rem;
+                    }
+
+                    .nav-link {
+                        color: var(--primary-color);
+                        font-weight: 600;
+                        text-decoration: none;
+                    }
+
+                    .nav-link:hover {
+                        text-decoration: underline;
+                    }
+
+                    .create-button {
+                        background-color: var(--primary-color);
+                        color: white;
+                        font-weight: 700;
+                        padding: 0.5rem 1rem;
+                        border-radius: 0.5rem;
+                        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+                        transition: background-color 0.2s ease-in-out;
+                        border: none;
+                        cursor: pointer;
+                    }
+
+                    .create-button:hover {
+                        background-color: var(--primary-dark);
+                    }
+
+                    .user-id {
+                        color: #6b7280; /* gray-500 */
+                        font-size: 0.875rem;
+                    }
+
+                    .message-box {
+                        position: fixed;
+                        bottom: 1rem;
+                        right: 1rem;
+                        padding: 1rem;
+                        border-radius: 0.5rem;
+                        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+                        font-size: 0.875rem;
+                        color: white;
+                        transition: all 0.3s ease-in-out;
+                    }
+
+                    .message-box.success {
+                        background-color: var(--success-color);
+                    }
+
+                    .message-box.error {
+                        background-color: var(--error-color);
+                    }
+
+                    .sort-button {
+                        padding: 0.5rem 1rem;
+                        border-radius: 9999px; /* rounded-full */
+                        font-weight: 600;
+                        transition: background-color 0.2s ease-in-out;
+                        border: none;
+                        cursor: pointer;
+                        background-color: var(--border-color);
+                        color: var(--secondary-text);
+                    }
+
+                    .sort-button.active {
+                        background-color: var(--primary-color);
+                        color: white;
+                    }
+                    .sort-button:hover:not(.active) {
+                        background-color: #d1d5db; /* gray-300 */
+                    }
+
+                    .post-card {
+                        background-color: var(--card-bg);
+                        padding: 1.5rem;
+                        border-radius: 0.75rem;
+                        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+                        margin-bottom: 1.5rem;
+                    }
+
+                    .post-title {
+                        font-size: 1.5rem;
+                        font-weight: 700;
+                        color: var(--text-color);
+                        margin-bottom: 0.5rem;
+                    }
+
+                    .post-content {
+                        color: var(--secondary-text);
+                        margin-bottom: 1rem;
+                        display: -webkit-box;
+                        -webkit-line-clamp: 3;
+                        -webkit-box-orient: vertical;
+                        overflow: hidden;
+                    }
+
+                    .post-footer {
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        margin-top: 1rem;
+                        padding-top: 1rem;
+                        border-top: 1px solid var(--border-color);
+                    }
+
+                    .post-meta {
+                        display: flex;
+                        align-items: center;
+                        gap: 1rem;
+                        font-size: 0.875rem;
+                        color: #9ca3af; /* gray-400 */
+                    }
+
+                    .meta-item {
+                        display: flex;
+                        align-items: center;
+                        gap: 0.25rem;
+                    }
+
+                    .icon {
+                        width: 1rem;
+                        height: 1rem;
+                    }
+
+                    .link-button {
+                        color: var(--primary-color);
+                        text-decoration: none;
+                        background: none;
+                        border: none;
+                        cursor: pointer;
+                        font-weight: 600;
+                        padding: 0;
+                    }
+                    .link-button:hover {
+                        text-decoration: underline;
+                    }
+                    .link-button.delete-button {
+                        color: var(--error-color);
+                    }
+
+                    .form-card {
+                        background-color: var(--card-bg);
+                        padding: 1.5rem;
+                        border-radius: 0.75rem;
+                        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+                    }
+
+                    .form-title {
+                        font-size: 1.5rem;
+                        font-weight: 700;
+                        color: var(--text-color);
+                        margin-bottom: 1rem;
+                    }
+
+                    .form-group {
+                        margin-bottom: 1rem;
+                    }
+
+                    .form-label {
+                        display: block;
+                        color: var(--secondary-text);
+                        font-weight: 600;
+                        margin-bottom: 0.25rem;
+                    }
+
+                    .form-input {
+                        width: 100%;
+                        padding: 0.5rem;
+                        border: 1px solid var(--border-color);
+                        border-radius: 0.5rem;
+                        transition: border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+                        resize: vertical;
+                    }
+                    .form-input:focus {
+                        outline: none;
+                        border-color: var(--primary-color);
+                        box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+                    }
+
+                    .form-submit-button {
+                        width: 100%;
+                        background-color: var(--primary-color);
+                        color: white;
+                        font-weight: 700;
+                        padding: 0.75rem 1rem;
+                        border-radius: 0.5rem;
+                        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+                        transition: background-color 0.2s ease-in-out;
+                        border: none;
+                        cursor: pointer;
+                    }
+                    .form-submit-button:hover {
+                        background-color: var(--primary-dark);
+                    }
+
+                    .post-detail-card {
+                        background-color: var(--card-bg);
+                        padding: 1.5rem;
+                        border-radius: 0.75rem;
+                        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+                    }
+                    
+                    .back-button {
+                        margin-bottom: 1rem;
+                        display: flex;
+                        align-items: center;
+                        color: var(--primary-color);
+                        text-decoration: none;
+                        font-weight: 600;
+                        border: none;
+                        background-color: transparent;
+                        cursor: pointer;
+                        padding: 0;
+                    }
+
+                    .back-icon {
+                        width: 1.25rem;
+                        height: 1.25rem;
+                        margin-right: 0.25rem;
+                    }
+
+                    .post-detail-title {
+                        font-size: 2rem;
+                        font-weight: 800;
+                        color: var(--text-color);
+                        margin-bottom: 0.5rem;
+                    }
+
+                    .post-detail-meta {
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        font-size: 0.875rem;
+                        color: #9ca3af;
+                        margin-bottom: 1rem;
+                    }
+
+                    .post-image-container {
+                        margin-bottom: 1.5rem;
+                    }
+
+                    .post-detail-image {
+                        width: 100%;
+                        max-height: 24rem;
+                        object-fit: cover;
+                        border-radius: 0.5rem;
+                        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+                    }
+
+                    .post-detail-content {
+                        color: var(--secondary-text);
+                        white-space: pre-wrap;
+                        margin-bottom: 1.5rem;
+                    }
+
+                    .post-actions {
+                        margin-top: 1rem;
+                        padding-top: 1rem;
+                        border-top: 1px solid var(--border-color);
+                    }
+
+                    .vote-section {
+                        display: flex;
+                        align-items: center;
+                        gap: 0.5rem;
+                    }
+
+                    .vote-button {
+                        display: flex;
+                        align-items: center;
+                        padding: 0.5rem;
+                        border-radius: 9999px; /* rounded-full */
+                        border: none;
+                        cursor: pointer;
+                        transition: background-color 0.2s ease-in-out, color 0.2s ease-in-out;
+                        background-color: transparent;
+                        color: #6b7280; /* gray-500 */
+                    }
+                    .vote-button:hover {
+                        background-color: #f3f4f6; /* gray-100 */
+                    }
+                    .vote-button.upvote-active {
+                        background-color: #22c55e; /* green-500 */
+                        color: white;
+                    }
+                    .vote-button.upvote-active:hover {
+                        background-color: #16a34a; /* green-600 */
+                    }
+                    .vote-button.downvote-active {
+                        background-color: #ef4444; /* red-500 */
+                        color: white;
+                    }
+                    .vote-button.downvote-active:hover {
+                        background-color: #dc2626; /* red-600 */
+                    }
+
+                    .vote-count {
+                        font-weight: 700;
+                        margin-left: 0.25rem;
+                    }
+
+                    .action-buttons {
+                        display: flex;
+                        align-items: center;
+                        gap: 0.5rem;
+                    }
+
+                    .divider {
+                        width: 1px;
+                        height: 1.5rem;
+                        background-color: var(--border-color);
+                        margin: 0 0.5rem;
+                    }
+
+                    .comments-section {
+                        margin-top: 1.5rem;
+                        padding-top: 1.5rem;
+                        border-top: 1px solid var(--border-color);
+                    }
+
+                    .comments-title {
+                        font-size: 1.25rem;
+                        font-weight: 700;
+                        color: var(--text-color);
+                        margin-bottom: 1rem;
+                    }
+
+                    .comment-form {
+                        margin-bottom: 1rem;
+                    }
+                    
+                    .comment-submit-button {
+                        width: 100%;
+                        background-color: #10b981; /* green-600 */
+                        color: white;
+                        font-weight: 700;
+                        padding: 0.5rem 1rem;
+                        border-radius: 0.5rem;
+                        transition: background-color 0.2s ease-in-out;
+                        border: none;
+                        cursor: pointer;
+                        margin-top: 0.5rem;
+                    }
+                    .comment-submit-button:hover {
+                        background-color: #047857; /* green-700 */
+                    }
+
+                    .comment-item {
+                        background-color: #f9fafb; /* gray-50 */
+                        padding: 1rem;
+                        border-radius: 0.5rem;
+                        margin-bottom: 0.75rem;
+                        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+                    }
+                    
+                    .comment-text {
+                        color: #374151;
+                    }
+
+                    .comment-meta {
+                        font-size: 0.875rem;
+                        color: #9ca3af;
+                        margin-top: 0.5rem;
+                    }
+                    
+                    .edit-comment-actions {
+                        display: flex;
+                        gap: 0.5rem;
+                        margin-top: 0.5rem;
+                    }
+                    
+                    .edit-comment-actions .save-button,
+                    .edit-comment-actions .cancel-button {
+                        padding: 0.25rem 0.75rem;
+                        border-radius: 0.25rem;
+                        border: none;
+                        font-weight: 600;
+                        cursor: pointer;
+                        transition: background-color 0.2s ease-in-out;
+                    }
+                    
+                    .edit-comment-actions .save-button {
+                        background-color: var(--success-color);
+                        color: white;
+                    }
+                    
+                    .edit-comment-actions .save-button:hover {
+                        background-color: #059669; /* green-700 */
+                    }
+
+                    .edit-comment-actions .cancel-button {
+                        background-color: #e5e7eb; /* gray-200 */
+                        color: var(--secondary-text);
+                    }
+
+                    .edit-comment-actions .cancel-button:hover {
+                        background-color: #d1d5db; /* gray-300 */
+                    }
+
+                    .ml-4 {
+                        margin-left: 1rem;
+                    }
+
+                    .empty-state {
+                        text-align: center;
+                        color: #6b7280;
+                        padding: 2rem 0;
+                    }
+
+                    @media (max-width: 640px) {
+                        .logo {
+                            font-size: 1.5rem;
+                        }
+                        .header-content {
+                            flex-direction: column;
+                            align-items: flex-start;
+                        }
+                        .nav-buttons {
+                            margin-top: 1rem;
+                            width: 100%;
+                        }
+                        .create-button {
+                            flex-grow: 1;
+                        }
+                        .post-footer {
+                            flex-direction: column;
+                            align-items: flex-start;
+                            gap: 1rem;
+                        }
+                    }
+                `}
+            </style>
+            <div className="main-content-wrapper">
+                <header className="header-card">
+                    <div className="flex-between-center mb-4">
+                        <h1 className="logo">
+                            Gemini Forum
+                        </h1>
+                        <nav className="nav-buttons">
+                            <button onClick={() => setCurrentPage('home')} className="nav-link">Home</button>
+                            <button onClick={() => setCurrentPage('create-post')} className="create-button">Create Post</button>
+                        </nav>
+                    </div>
+                    <p className="user-id">
+                        {userId ? `User ID: ${userId}` : 'Authenticating...'}
+                    </p>
+                </header>
+
+                <main>
+                    {renderPage()}
+                </main>
+
+                {/* Message box for notifications */}
+                {message && (
+                    <div className={`message-box ${messageType}`}>
+                        {message}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
+export default App;
+
