@@ -55,8 +55,10 @@ const App = () => {
     const debouncedSearchQuery = useDebounce(localSearchTerm, 500);
 
     // Global variables provided by the environment
+   // Gemini AI would inject two environment variables for its immersive to run, but we are running stand alone in vite, so these two would be falsy nullish.
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
     const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+    console.log(`appId is ${appId} and initialAuthToken is ${initialAuthToken}`);
 
     // Helper function to show a temporary notification message
     const showMessage = (text, type = 'info') => {
@@ -103,36 +105,51 @@ const App = () => {
     // --- Firestore Data Fetching ---
     // This effect fetches ALL posts and stores them in `allPosts` state
     useEffect(() => {
-        if (!db || !userId) return;
+    // Exit if Firebase is not yet initialized
+    if (!db || !userId) return;
 
-        const postsCollection = collection(db, `/artifacts/${appId}/public/data/posts`);
-        const q = query(postsCollection);
+    // Array to store all the unsubscribe functions for comment listeners
+    const commentUnsubscribes = [];
 
-        const unsubscribePosts = onSnapshot(q, (snapshot) => {
-            const fetchedPosts = snapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data(),
-            }));
-            setAllPosts(fetchedPosts);
+    // Main listener for the posts collection
+    const postsCollection = collection(db, `/artifacts/${appId}/public/data/posts`);
+    const q = query(postsCollection);
 
-            // Fetch comment counts for each post
-            const counts = {};
-            fetchedPosts.forEach(post => {
-                const commentsCollection = collection(db, `/artifacts/${appId}/public/data/posts/${post.id}/comments`);
-                // Use a separate listener for each post's comment count
-                onSnapshot(commentsCollection, (commentSnapshot) => {
-                    counts[post.id] = commentSnapshot.size;
-                    setCommentCounts({...counts});
-                });
+    const unsubscribePosts = onSnapshot(q, (snapshot) => {
+        const fetchedPosts = snapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data(),
+        }));
+        setAllPosts(fetchedPosts);
+
+        // Fetch comment counts for each post
+        const counts = {};
+        fetchedPosts.forEach(post => {
+            const commentsCollection = collection(db, `/artifacts/${appId}/public/data/posts/${post.id}/comments`);
+            
+            // Use a separate listener for each post's comment count
+            // and push the unsubscribe function to our array
+            const unsubscribeComments = onSnapshot(commentsCollection, (commentSnapshot) => {
+                counts[post.id] = commentSnapshot.size;
+                setCommentCounts({...counts});
             });
-
-        }, (error) => {
-            console.error("Error fetching posts:", error);
-            showMessage("Error fetching posts.", "error");
+            commentUnsubscribes.push(unsubscribeComments);
         });
 
-        return () => unsubscribePosts();
-    }, [db, userId, appId]);
+    }, (error) => {
+        console.error("Error fetching posts:", error);
+        showMessage("Error fetching posts.", "error");
+    });
+
+    // The cleanup function now unsubscribes from BOTH listeners
+    return () => {
+        // First, unsubscribe from the main posts listener
+        unsubscribePosts();
+        // Then, loop through and unsubscribe from all the comment listeners
+        commentUnsubscribes.forEach(unsubscribe => unsubscribe());
+    };
+}, [db, userId, appId]);
+
 
     // --- Filtering and Sorting Logic ---
     // This effect now uses the debounced search query
@@ -748,4 +765,3 @@ const App = () => {
 };
 
 export default App;
-
