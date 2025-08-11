@@ -24,18 +24,19 @@ const useDebounce = (value, delay) => {
 };
 
 // Main application component
-const App = () => {
     // Firebase configuration from the environment
+const App = () => {
+    // Firebase configuration from environment variables
     const firebaseConfig = {
-        apiKey: "AIzaSyDMf8dxE76Cg2WInANZCIPZ7fC31ni2AX4",
-        authDomain: "forum-6180f.firebaseapp.com",
-        projectId: "forum-6180f",
-        storageBucket: "forum-6180f.firebasestorage.app",
-        messagingSenderId: "804196772268",
-        appId: "1:804196772268:web:cde0111cd95d8177af3209",
-        measurementId: "G-TBKN7HYYRY"
+        apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+        authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+        projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+        storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+        messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+        appId: import.meta.env.VITE_FIREBASE_APP_ID,
+        measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
     };
-
+    // The rest of your App component code follows...
     // State management for the application
     const [allPosts, setAllPosts] = useState([]); // Raw data from Firestore
     const [posts, setPosts] = useState([]); // Filtered and sorted posts for display
